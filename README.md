@@ -1,3 +1,40 @@
+Context-aware Nematus
+-----------------------
+
+### Usage:
+
+#### Training
+
+Standard Nematus parameters apply. Additional parameters:
+
+* To use the context-aware implementation instead of the standard Nematus:
+
+      --ctx_model
+
+* To use gates to integrate context
+
+      --ctx_gate
+
+* To use RNN-based context encoder (attention only by default)
+
+      --ctx_rnn
+      
+Source file should be in the following format: CONTEXT_SENTENCE !@#$ MAIN_SENTENCE
+
+#### Translating
+
+Standard Nematus translation parameters apply. Additional parameters:
+
+*  Output file for context alignment weights  
+      --output_beta_alignment
+
+* Output file for context integration gates
+
+Input should be in the required format CONTEXT_SENTENCE !@#$ MAIN_SENTENCE. 
+
+
+
+
 NEMATUS
 -------
 
@@ -6,13 +43,11 @@ Attention-based encoder-decoder model for neural machine translation
 This package is based on the dl4mt-tutorial by Kyunghyun Cho et al. ( https://github.com/nyu-dl/dl4mt-tutorial ).
 It was used to produce top-scoring systems at the WMT 16 shared translation task.
 
-This version of Nematus is based on Theano. The main development work is done on the Tensorflow version in the master branch.
-
 The changes to Nematus include:
 
  - new architecture variants for better performance:
      - arbitrary input features (factored neural machine translation) http://www.statmt.org/wmt16/pdf/W16-2209.pdf
-     - deep models (Zhou et al., 2016; Wu et al., 2016; Miceli Barone et al., 2017) https://arxiv.org/abs/1606.04199 https://arxiv.org/abs/1609.08144 https://arxiv.org/abs/1707.07631
+     - deep models (Zhou et al., 2016; Wu et al., 2016) https://arxiv.org/abs/1606.04199 https://arxiv.org/abs/1609.08144
      - dropout on all layers (Gal, 2015) http://arxiv.org/abs/1512.05287
      - tied embeddings (Press and Wolf, 2016) https://arxiv.org/abs/1608.05859
      - layer normalisation (Ba et al, 2016) https://arxiv.org/abs/1607.06450
@@ -28,7 +63,6 @@ The changes to Nematus include:
      - more output options (attention weights; word-level probabilities) and visualization scripts
      - execute arbitrary validation scripts (for BLEU early stopping)
      - vocabulary files and model parameters are stored in JSON format (backward-compatible loading)
-     - server mode
 
 see changelog for more info
 
@@ -42,12 +76,12 @@ INSTALLATION
 
 Nematus requires the following packages:
 
- - Python 2.7
+ - Python >= 2.7
  - numpy
  - Theano >= 0.7 (and its dependencies).
 
 we recommend executing the following command in a Python virtual environment:
-   `pip install numpy numexpr cython tables theano bottle bottle-log tornado`
+   `pip install numpy numexpr cython tables theano bottle bottle-log paste`
 
 the following packages are optional, but *highly* recommended
 
@@ -115,14 +149,6 @@ GPU, float16, CuDNN 5.1, theano 0.9.0-RELEASE, new GPU backend:
 
 >> 222.28 sentences/s
 
-GPU, CUDNN 7, theano 1.0, scan.allow_output_prealloc=True:
-
->> 308 sentences/s
-
-GPU, CUDNN 7, theano 1.0, scan.allow_output_prealloc=True, dynamic batching ("--token_batch_size 2000"):
-
->> 363 sentences/s
-
 See SPEED.md for more benchmark results on different hardware and hyperparameter configurations.
 
 USAGE INSTRUCTIONS
@@ -137,12 +163,9 @@ execute nematus/nmt.py to train a model.
 | --datasets PATH PATH |  parallel training corpus (source and target) |
 | --dictionaries PATH [PATH ...] | network vocabularies (one per source factor, plus target vocabulary) |
 | --model PATH         |  model file name (default: model.npz) |
-| --deep_fusion_lm PATH | deep fusion language model file name (default: None) |
 | --saveFreq INT       |  save frequency (default: 30000) |
 | --reload             |  load existing model (if '--model' points to existing model) |
 | --overwrite          |  write all models to same file |
-| --multilingual       |  Use a multilingual data iterator to iterate over multiple sets of parallel sentences in equal batches (requires `language_source_target` to be set, default: False) |
-| --language_source_target |  Target languages and file names for multilingual NMT training (For example `[('ru','multi.en', 'multi.ru'),('et','multi.en', 'multi.et')]`, default: None) |
 
 #### network parameters
 | parameter            | description |
@@ -159,20 +182,17 @@ execute nematus/nmt.py to train a model.
 | --dropout_source FLOAT | dropout source words (0: no dropout) (default: 0) |
 | --dropout_target FLOAT | dropout target words (0: no dropout) (default: 0) |
 | --layer_normalisation    | use layer normalisation (default: False) |
-| --weight_normalisation   | use weight normalisation (default: False) |
+| --weight_normalisation   | use weight normalisation (default: False) | 
 | --tie_decoder_embeddings | tie the input embeddings of the decoder with the softmax output embeddings |
 | --tie_encoder_decoder_embeddings | tie the input embeddings of the encoder and the decoder (first factor only). Source and target vocabulary size must the same |
-| --encoder                 | encoder cell type (default: gru)
-| --enc_depth INT           | number of encoder layers (default: 1) |
+| --enc_depth INT | number of encoder layers (default: 1) |
 | --enc_depth_bidirectional | number of bidirectional encoder layers; if enc_depth is greater, remaining layers are unidirectional; by default, all layers are bidirectional. |
-| --decoder                 | type of recurrent layer for first decoder layer (default: gru_cond |
-| --decoder_deep            | type of recurrent layer for decoder layers after the first (default: gru) |
-| --dec_depth INT           | number of decoder layers (default: 1) |
-| --dec_deep_context        | pass context vector (from first layer) to deep decoder layers |
+| --dec_depth INT | number of decoder layers (default: 1) |
+| --dec_deep_context | pass context vector (from first layer) to deep decoder layers |
+| --decoder_deep | type of recurrent layer for decoder layers after the first (default: gru) |
 | --enc_recurrence_transition_depth | number of GRU transition operations applied in an encoder layer (default: 1) |
 | --dec_base_recurrence_transition_depth | number of GRU transition operations applied in first decoder layer (default: 2) |
 | --dec_high_recurrence_transition_depth | number of GRU transition operations applied in decoder layers after the first (default: 1) |
-| --concatenate_lm_decoder  | concatenate LM state and decoder state (deep fusion) |
 
 #### training parameters
 | parameter            | description |
@@ -180,25 +200,22 @@ execute nematus/nmt.py to train a model.
 | --maxlen INT         |  maximum sequence length (default: 100) |
 | --optimizer {adam,adadelta,rmsprop,sgd} | optimizer (default: adam) |
 | --batch_size INT     | minibatch size (default: 80) |
-| --token_batch_size INT | minibatch size (expressed in number of source or target tokens). Sentence-level minibatch size will be dynamic. If this is enabled, batch_size only affects sorting by length. |
 | --max_epochs INT     | maximum number of epochs (default: 5000) |
 | --finish_after INT   | maximum number of updates (minibatches) (default: 10000000) |
 | --decay_c FLOAT      |  L2 regularization penalty (default: 0) |
-| --map_decay_c FLOAT  | MAP-L2 regularization penalty towards original weights (default: 0) |
-| --prior_model STR    | Prior model for MAP-L2 regularization. Unless using "--reload", this will also be used for initialization. |
+| --map_decay_c FLOAT  |  L2 regularization penalty towards original weights (default: 0) |
 | --clip_c FLOAT       |  gradient clipping threshold (default: 1) |
 | --lrate FLOAT        |  learning rate (default: 0.0001) |
 | --no_shuffle         |  disable shuffling of training data (for each epoch) |
 | --no_sort_by_length  |  do not sort sentences in maxibatch by length |
 | --maxibatch_size INT |  size of maxibatch (number of minibatches that are sorted by length) (default: 20) |
-| --objective {CE,MRT,RAML} |  training objective. CE: cross-entropy minimization (default); MRT: Minimum Risk Training (https://www.aclweb.org/anthology/P/P16/P16-1159.pdf); RAML: Reward Augmented Maximum Likelihood (https://arxiv.org/pdf/1609.00150.pdf) |
+| --objective {CE,MRT} |  training objective. CE: cross-entropy minimization (default); MRT: Minimum Risk Training (https://www.aclweb.org/anthology/P/P16/P16-1159.pdf) |
 
 #### validation parameters
 | parameter            | description |
 |---                   |--- |
 | --valid_datasets PATH PATH | parallel validation corpus (source and target)| (default: None) |
 | --valid_batch_size INT | validation minibatch size (default: 80) |
-| --valid_token_batch_size INT | validation minibatch size (expressed in number of source or target tokens). Sentence-level minibatch size will be dynamic. If this is enabled, valid_batch_size only affects sorting by length. |
 | --validFreq INT       | validation frequency (default: 10000) |
 | --patience INT        | early stopping patience (default: 10) |
 | --anneal_restarts INT | when patience runs out, restart training INT times with annealed learning rate (default: 0) |
@@ -221,13 +238,6 @@ execute nematus/nmt.py to train a model.
 | --mrt_reference              | add reference to MRT samples. |
 | --mrt_ml_mix                 | mix in ML objective in MRT training with this scaling factor (default: 0) |
 
-#### reward augmented maximum likelihood training parameters
-| parameter | description |
-|--- |--- |
-| --raml_tau FLOAT   | RAML tau (default: 0.85) |
-| --raml_samples INT | samples per source sentence (default: 1)|
-| --raml_reward {hamming_distance,edit_distance,bleu}| reward for RAML sampling|
-
 more instructions to train a model, including a sample configuration and
 preprocessing scripts, are provided in https://github.com/rsennrich/wmt16-scripts
 
@@ -249,7 +259,7 @@ preprocessing scripts, are provided in https://github.com/rsennrich/wmt16-script
 | --n-best             | Write n-best list (of size k) |
 | --suppress-unk       | Suppress hypotheses containing UNK. |
 | --print-word-probabilities, -wp | Print probabilities of each word |
-| --search_graph, -sg  | Output file for search graph visualisation. File format is determined by file name, e.g., PDF for `search_graph.pdf` |
+| --search_graph, -sg  | Output file for search graph rendered as PNG image |
 | --device-list, -dl      | User specified device list for multi-processing decoding. For example: --device-list gpu0 gpu1 gpu2 |
 
 
@@ -264,7 +274,7 @@ preprocessing scripts, are provided in https://github.com/rsennrich/wmt16-script
 | --source PATH, -s PATH | Source text file |
 | --target PATH, -t PATH | Target text file |
 | --output PATH, -o PATH | Output file (default: standard output) |
-| --walign, -w           | Whether to store the alignment weights or not. If specified, weights will be saved in <target>.alignment.json |
+| --walign, -w           | Whether to store the alignment weights or not. If specified, weights will be saved in <target>.alignment |
 
 
 #### `nematus/rescore.py` : use an existing model to rescore an n-best list.
@@ -285,11 +295,8 @@ sample models, and instructions on using them for translation, are provided in t
 NOTES
 -----
 
-- The pipe symbol "|" serves as a factor separator and should not otherwise appear in the text. See [the documentation on factors](doc/factored_neural_machine_translation.md) for more information. Using the Moses tokenizer also escapes pipe symbols.
-
-- Support for float16 may not be fully functional or efficient using depending on the Theano version and GPU model.
+Support for float16 may not be fully functional or efficient using depending on the Theano version and GPU model.
 If you use float16 for training, consider using a lower learning rate for increased numerical stability.
-
 
 PUBLICATIONS
 ------------
