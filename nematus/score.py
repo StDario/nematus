@@ -12,13 +12,13 @@ import logging
 
 import numpy
 
-from data_iterator import TextIterator
+from data_iterator import TextIterator, CtxTextIterator
 from util import load_config
 from alignment_util import combine_source_target_text_1to1
 from compat import fill_options
 
 from theano_util import (floatX, numpy_floatX, load_params, init_theano_params)
-from nmt import (pred_probs, build_model, prepare_data)
+from nmt import (pred_probs, build_model, build_ctx_model, prepare_data, prepare_ctx_data)
 from settings import ScorerSettings
 
 from theano.sandbox.rng_mrg import MRG_RandomStreams as RandomStreams
@@ -32,12 +32,20 @@ def load_scorer(model, option, alignweights=None):
     params = load_params(model, param_list)
     tparams = init_theano_params(params)
 
-    trng, use_noise, \
-        x, x_mask, y, y_mask, \
-        opt_ret, \
-        cost = \
-        build_model(tparams, option)
-    inps = [x, x_mask, y, y_mask]
+    if not option['ctx_model']:
+        trng, use_noise, \
+            x, x_mask, y, y_mask, \
+            opt_ret, \
+            cost = \
+            build_model(tparams, option)
+        inps = [x, x_mask, y, y_mask]
+    else:
+        trng, use_noise, \
+            x, x_mask, x_pctx, x_pctx_mask, y, y_mask, \
+            opt_ret, \
+            cost = \
+            build_ctx_model(tparams, option)
+        inps = [x, x_mask, y, y_mask, x_pctx, x_pctx_mask]
     use_noise.set_value(0.)
 
     if alignweights:
@@ -59,22 +67,34 @@ def rescore_model(source_file, target_file, output_file, scorer_settings, option
         alignments = []
         for i, model in enumerate(scorer_settings.models):
             f_log_probs = load_scorer(model, options[i], alignweights=alignweights)
-            score, alignment = pred_probs(f_log_probs, prepare_data, options[i], pairs, normalization_alpha=scorer_settings.normalization_alpha, alignweights =alignweights)
+            pp_data = prepare_data if not options[i]['ctx_model'] else prepare_ctx_data
+            score, alignment = pred_probs(f_log_probs, pp_data, options[i], pairs, normalization_alpha=scorer_settings.normalization_alpha, alignweights =alignweights)
             scores.append(score)
             alignments.append(alignment)
 
         return scores, alignments
 
-    pairs = TextIterator(source_file.name,
-                         target_file.name,
-                         options[0]['dictionaries'][:-1],
-                         options[0]['dictionaries'][-1],
-                         n_words_source=options[0]['n_words_src'],
-                         n_words_target=options[0]['n_words'],
-                         batch_size=scorer_settings.b,
-                         maxlen=float('inf'),
-                         use_factor=(options[0]['factors'] > 1),
-                         sort_by_length=False) #TODO: sorting by length could be more efficient, but we'd want to resort after
+    if not options[0]['ctx_model']:
+        pairs = TextIterator(source_file.name,
+                             target_file.name,
+                             options[0]['dictionaries'][:-1],
+                             options[0]['dictionaries'][-1],
+                             n_words_source=options[0]['n_words_src'],
+                             n_words_target=options[0]['n_words'],
+                             batch_size=scorer_settings.b,
+                             maxlen=float('inf'),
+                             use_factor=(options[0]['factors'] > 1),
+                             sort_by_length=False) #TODO: sorting by length could be more efficient, but we'd want to resort after
+    else:
+        pairs = CtxTextIterator(source_file.name,
+                             target_file.name,
+                             options[0]['dictionaries'][:-1],
+                             options[0]['dictionaries'][-1],
+                             n_words_source=options[0]['n_words_src'],
+                             n_words_target=options[0]['n_words'],
+                             batch_size=scorer_settings.b,
+                             maxlen=float('inf'),
+                             sort_by_length=False) #TODO: sorting by length could be more efficient, but we'd want to resort after
 
     scores, alignments = _score(pairs, scorer_settings.alignweights)
 

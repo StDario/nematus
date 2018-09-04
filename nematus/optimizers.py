@@ -71,6 +71,62 @@ def adam(lr, tparams, grads, inp, cost, beta1=0.9, beta2=0.999, e=1e-8, optimize
 
     return f_update, optimizer_tparams
 
+
+def amsgrad(lr, tparams, grads, inp, cost, beta1=0.9, beta2=0.999, e=1e-8, optimizer_params={}, profile=False):
+    PREFIX = 'adam_'
+
+    updates = []
+    optimizer_tparams = {}
+
+    # Avoid underflow of e with float16
+    if (floatX == "float16") and (e > 0.0):
+        e = max(e, 1e-6)
+
+    t_prev_name = PREFIX + 't_prev'
+    if t_prev_name in optimizer_params:
+        t_prev_init = optimizer_params[t_prev_name]
+    else:
+        t_prev_init = 0.
+    t_prev = theano.shared(numpy_floatX(t_prev_init), t_prev_name)
+    optimizer_tparams[t_prev_name] = t_prev
+
+    t = t_prev + 1.
+    lr_t = lr * tensor.sqrt(1. - beta2 ** t) / (1. - beta1 ** t)
+
+    for p, g in zip(tparams.values(), grads):
+        # Create/Load variable for first moment
+        m_name = PREFIX + p.name + '_mean'
+        if m_name in optimizer_params:
+            m_init = optimizer_params[m_name]
+        else:
+            m_init = p.get_value() * 0.
+        m = theano.shared(m_init, m_name)
+        optimizer_tparams[m_name] = m
+
+        # Create/Load variable for second moment
+        v_name = PREFIX + p.name + '_variance'
+        if v_name in optimizer_params:
+            v_init = optimizer_params[v_name]
+        else:
+            v_init = p.get_value() * 0.
+        v = theano.shared(v_init, v_name)
+        optimizer_tparams[v_name] = v
+
+        # Define updates on shared vars
+        m_t = beta1 * m + (1. - beta1) * g
+        v_t = beta2 * v + (1. - beta2) * g ** 2
+        step = lr_t * m_t / (tensor.sqrt(tensor.maximum(m_t, v_t)) + e)
+        p_t = p - step
+        updates.append((m, m_t))
+        updates.append((v, v_t))
+        updates.append((p, p_t))
+    updates.append((t_prev, t))
+
+    f_update = theano.function([lr] + inp, cost, updates=updates,
+                               on_unused_input='ignore', profile=profile)
+
+    return f_update, optimizer_tparams
+
 def adadelta(lr, tparams, grads, inp, cost, optimizer_params={}, profile=False):
     PREFIX = 'adadelta_'
 

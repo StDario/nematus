@@ -24,7 +24,8 @@ class Translation(object):
     Models a translated segment.
     """
     def __init__(self, source_words, target_words, sentence_id=None, score=0, alignment=None,
-                 target_probs=None, hyp_graph=None, hypothesis_id=None):
+                 target_probs=None, hyp_graph=None, hypothesis_id=None, prev_source_words=None, beta_alignment=None,
+                 gates=None, ctx_model=False):
         self.source_words = source_words
         self.target_words = target_words
         self.sentence_id = sentence_id
@@ -33,6 +34,10 @@ class Translation(object):
         self.target_probs = target_probs #TODO: assertion of length?
         self.hyp_graph = hyp_graph
         self.hypothesis_id = hypothesis_id
+        self.prev_source_words = prev_source_words
+        self.beta_alignment = beta_alignment
+        self.gates = gates
+        self.ctx_model = ctx_model
 
     def get_alignment(self):
         return self.alignment
@@ -56,6 +61,58 @@ class Translation(object):
 
         matrix = []
         for target_word_alignment in self.alignment:
+            current_weights = []
+            for weight in target_word_alignment:
+                current_weights.append(str(weight))
+            matrix.append(" ".join(current_weights))
+
+        return header + "\n".join(matrix)
+
+    def get_beta_alignment_text(self):
+        """
+        Returns this translation's alignment rendered as a string.
+        Columns in header: sentence id ||| target words ||| score |||
+                           source words ||| number of source words |||
+                           number of target words
+        """
+        columns = [
+            self.sentence_id,
+            " ".join(self.target_words),
+            self.score,
+            " ".join(self.prev_source_words),
+            len(self.prev_source_words) + 1,
+            len(self.target_words) + 1
+        ]
+        header = "{0} ||| {1} ||| {2} ||| {3} ||| {4} {5}\n".format(*columns)
+
+        matrix = []
+        for target_word_alignment in self.beta_alignment:
+            current_weights = []
+            for weight in target_word_alignment:
+                current_weights.append(str(weight))
+            matrix.append(" ".join(current_weights))
+
+        return header + "\n".join(matrix)
+
+    def get_gates_text(self):
+        """
+        Returns this translation's alignment rendered as a string.
+        Columns in header: sentence id ||| target words ||| score |||
+                           source words ||| number of source words |||
+                           number of target words
+        """
+        columns = [
+            self.sentence_id,
+            " ".join(self.target_words),
+            0,
+            " ".join(self.source_words),
+            len(self.source_words) + 1,
+            len(self.target_words) + 1
+        ]
+        header = "{0} ||| {1} ||| {2} ||| {3} ||| {4} {5}\n".format(*columns)
+
+        matrix = []
+        for target_word_alignment in self.gates:
             current_weights = []
             for weight in target_word_alignment:
                 current_weights.append(str(weight))
@@ -147,6 +204,13 @@ class Translator(object):
             # backward compatibility
             fill_options(options[-1])
 
+            if 'ctx_rnn' not in options[-1]:
+                options[-1]['ctx_rnn'] = False
+            if 'ctx_sep_enc' not in options[-1]:
+                options[-1]['ctx_sep_enc'] = False
+            if 'num_ctx_sents' not in options[-1]:
+                options[-1]['num_ctx_sents'] = False
+
         self._options = options
 
     def _build_dictionaries(self):
@@ -233,7 +297,7 @@ class Translator(object):
         from theano.sandbox.rng_mrg import MRG_RandomStreams as RandomStreams
         from theano import shared
 
-        from nmt import (build_sampler, gen_sample)
+        from nmt import (build_sampler, build_ctx_sampler, gen_sample)
         from theano_util import (numpy_floatX, load_params, init_theano_params)
 
         trng = RandomStreams(1234)
@@ -250,8 +314,12 @@ class Translator(object):
             tparams = init_theano_params(params)
 
             # always return alignment at this point
-            f_init, f_next = build_sampler(
-                tparams, option, use_noise, trng, return_alignment=True)
+            if option['ctx_model']:
+                f_init, f_next = build_ctx_sampler(
+                    tparams, option, use_noise, trng, return_alignment=True)
+            else:
+                f_init, f_next = build_sampler(
+                    tparams, option, use_noise, trng, return_alignment=True)
 
             fs_init.append(f_init)
             fs_next.append(f_next)
@@ -327,7 +395,10 @@ class Translator(object):
         logging.debug('{0} - {1}\n'.format(process_id, idx))
 
         # sample given an input sequence and obtain scores
-        sample, score, word_probs, alignment, hyp_graph = self._sample(input_item, trng, fs_init, fs_next, gen_sample)
+        if self._options[0]['ctx_model'] and input_item.return_alignment:
+            sample, score, word_probs, alignment, hyp_graph, beta_alignment, gates = self._sample(input_item, trng, fs_init, fs_next, gen_sample)
+        else:
+            sample, score, word_probs, alignment, hyp_graph = self._sample(input_item, trng, fs_init, fs_next, gen_sample)
 
         # normalize scores according to sequence lengths
         if normalization_alpha:
@@ -338,8 +409,13 @@ class Translator(object):
         else:
             # return translation with lowest score only
             sidx = numpy.argmin(score)
-            output_item = sample[sidx], score[sidx], word_probs[
-                sidx], alignment[sidx], hyp_graph
+
+            if self._options[0]['ctx_model'] and input_item.return_alignment:
+                output_item = sample[sidx], score[sidx], word_probs[
+                    sidx], alignment[sidx], hyp_graph, beta_alignment[sidx], gates[sidx]
+            else:
+                output_item = sample[sidx], score[sidx], word_probs[
+                    sidx], alignment[sidx], hyp_graph
 
         return output_item
 
@@ -356,11 +432,31 @@ class Translator(object):
         seq = input_item.seq
         max_ratio = input_item.max_ratio
 
+        p_seq = seq[0]
+        seq = seq[1]
+
+        if self._options[0]['ctx_sep_enc']:
+
+            x_pctx_maxlen = 0
+
+            for i in range(len(p_seq)):
+                if len(p_seq[i]) > x_pctx_maxlen:
+                    x_pctx_maxlen = len(p_seq[i])
+
+            x_pctx = numpy.zeros((len(p_seq), x_pctx_maxlen, 1), dtype='int64')
+            for i in range(self._options[0]['num_ctx_sents']):
+                x_pctx[i, :len(p_seq[i]), :] = numpy.array(p_seq[i], dtype='int64')
+
+        else:
+            x_pctx = numpy.array(p_seq, dtype='int64').T.reshape(
+                [1, len(p_seq), 1])
+
         maxlen = 200 #TODO: should be configurable
         if max_ratio:
           maxlen = int(max_ratio * len(seq))
 
         return gen_sample(fs_init, fs_next,
+                          x_pctx,
                           numpy.array(seq).T.reshape(
                               [len(seq[0]), len(seq), 1]),
                           self._options[0],
@@ -381,14 +477,33 @@ class Translator(object):
             if translation_settings.char_level:
                 words = list(line.decode('utf-8').strip())
             else:
-                words = line.strip().split()
+                line = line.strip()
+
+                main_ps = line.split("!@#$")
+
+                main = main_ps[-1].split()
+
+                if self._options[0]['ctx_sep_enc']:
+                    ps = []
+                    if len(main_ps) > 1:
+                        ctx_sents = main_ps[0].split("@#!$")
+                        for i in range(len(ctx_sents)):
+                            ps.append(ctx_sents[i].split())
+
+                        for i in range(len(ps), self._options[0]['num_ctx_sents']):
+                            ps.insert(0, [""])
+                    else:
+                        ps = [[""] for _ in range(self._options[0]['num_ctx_sents'])]
+                else:
+                    ps = []
+                    if len(main_ps) > 1:
+                        ps = main_ps[0].split()
+
+                words = [ps, main]
 
             x = []
-            for w in words:
-                if self._options[0]['factors'] > 1:
-                    w = [self._word_dicts[i][f] if f in self._word_dicts[i] else 1 for (i,f) in enumerate(w.split('|'))]
-                else:
-                    w = [self._word_dicts[0][w] if w in self._word_dicts[0] else 1]
+            for w in main:
+                w = [self._word_dicts[i][f] if f in self._word_dicts[i] else 1 for (i,f) in enumerate(w.split('|'))]
                 if len(w) != self._options[0]['factors']:
                     logging.warning('Expected {0} factors, but input word has {1}\n'.format(self._options[0]['factors'], len(w)))
                     for midx in xrange(self._num_processes):
@@ -396,7 +511,35 @@ class Translator(object):
                     sys.exit(1)
                 x.append(w)
 
+            if self._options[0]['ctx_sep_enc']:
+                tmp = []
+                if ps is not None:
+                    for s in ps:
+                        s_tmp = []
+                        for w in s:
+                            w = [self._word_dicts[i][f] if f in self._word_dicts[i] else 1 for (i, f) in
+                                 enumerate(w.split('|'))]
+                            s_tmp.append(w)
+                        tmp.append(s_tmp)
+                    ps = tmp
+            else:
+                tmp = []
+                if ps is not None:
+                    for w in ps:
+                        w = [self._word_dicts[i][f] if f in self._word_dicts[i] else 1 for (i, f) in
+                             enumerate(w.split('|'))]
+                        tmp.append(w)
+                    ps = tmp
+
             x += [[0]*self._options[0]['factors']]
+
+            if self._options[0]['ctx_sep_enc']:
+                ps = [p + [[0] * self._options[0]['factors']] for p in ps]
+            else:
+                ps += [[0]*self._options[0]['factors']]
+
+
+            x = [ps, x]
 
             input_item = QueueItem(verbose=self._verbose,
                                    return_hyp_graph=translation_settings.get_search_graph,
@@ -435,7 +578,6 @@ class Translator(object):
                             sys.exit(1)
             request_id, idx, output_item = resp
             self._retrieved_translations[request_id][idx] = output_item
-            #print self._retrieved_translations
 
         for idx in xrange(num_samples):
             yield self._retrieved_translations[request_id][idx]
@@ -455,7 +597,12 @@ class Translator(object):
         translations = []
         for i, trans in enumerate(self._retrieve_jobs(n_samples, translation_settings.request_id)):
 
-            samples, scores, word_probs, alignment, hyp_graph = trans
+            if self._options[0]['ctx_model'] and translation_settings.get_alignment:
+                samples, scores, word_probs, alignment, hyp_graph, beta_alignment, gates = trans
+            else:
+                samples, scores, word_probs, alignment, hyp_graph = trans
+                beta_alignment = None
+                gates = None
             # n-best list
             if translation_settings.n_best is True:
                 order = numpy.argsort(scores)
@@ -463,25 +610,33 @@ class Translator(object):
                 for j in order:
                     current_alignment = None if not translation_settings.get_alignment else alignment[j]
                     translation = Translation(sentence_id=i,
-                                              source_words=source_sentences[i],
+                                              source_words=source_sentences[i][1],
                                               target_words=seqs2words(samples[j], self._word_idict_trg, join=False),
                                               score=scores[j],
                                               alignment=current_alignment,
                                               target_probs=word_probs[j],
                                               hyp_graph=hyp_graph,
-                                              hypothesis_id=j)
+                                              hypothesis_id=j,
+                                              prev_source_words=source_sentences[i][0],
+                                              beta_alignment=beta_alignment,
+                                              gates=gates,
+                                              ctx_model=self._options[0]['ctx_model'])
                     n_best_list.append(translation)
                 translations.append(n_best_list)
             # single-best translation
             else:
                 current_alignment = None if not translation_settings.get_alignment else alignment
                 translation = Translation(sentence_id=i,
-                                          source_words=source_sentences[i],
+                                          source_words=source_sentences[i][1],
                                           target_words=seqs2words(samples, self._word_idict_trg, join=False),
                                           score=scores,
                                           alignment=current_alignment,
                                           target_probs=word_probs,
-                                          hyp_graph=hyp_graph)
+                                          hyp_graph=hyp_graph,
+                                          prev_source_words=source_sentences[i][0],
+                                          beta_alignment=beta_alignment,
+                                          gates=gates,
+                                          ctx_model=self._options[0]['ctx_model'])
                 translations.append(translation)
         return translations
 
@@ -515,10 +670,24 @@ class Translator(object):
         Writes alignments to a file.
         """
         output_file = translation_settings.output_alignment
+
+        output_beta_file = None
+        output_gates_file = None
+
+        if translation_settings.output_beta_alignment is not None:
+            output_beta_file = translation_settings.output_beta_alignment
+        if translation_settings.output_gates is not None:
+            output_gates_file = translation_settings.output_gates
+
         if translation_settings.json_alignment:
             output_file.write(translation.get_alignment_json() + "\n")
         else:
             output_file.write(translation.get_alignment_text() + "\n\n")
+
+            if self._options[0]['ctx_model']:
+                output_beta_file.write(translation.get_beta_alignment_text() + "\n\n")
+            if self._options[0]['ctx_model']:
+                output_gates_file.write(translation.get_gates_text() + "\n\n")
 
     def write_translation(self, output_file, translation, translation_settings):
         """
@@ -576,11 +745,15 @@ def main(input_file, output_file, translation_settings):
     Translates a source language file (or STDIN) into a target language file
     (or STDOUT).
     """
+    import time
     translator = Translator(translation_settings)
+    start = time.time()
     translations = translator.translate_file(input_file, translation_settings)
+    end = time.time()
     translator.write_translations(output_file, translations, translation_settings)
 
     logging.info('Done')
+    logging.info('Estimated time: ' + str(end - start))
     translator.shutdown()
 
 

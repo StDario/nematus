@@ -25,7 +25,7 @@ from collections import OrderedDict
 
 profile = False
 
-from data_iterator import TextIterator
+from data_iterator import TextIterator, CtxTextIterator, MulCtxTextIterator
 from training_progress import TrainingProgress
 from util import *
 from theano_util import *
@@ -38,7 +38,7 @@ from optimizers import *
 from metrics.scorer_provider import ScorerProvider
 
 from domain_interpolation_data_iterator import DomainInterpolatorTextIterator
-from multi_data_iterator import MultilingualTextIterator
+
 
 # batch preparation
 def prepare_data(seqs_x, seqs_y, weights=None, maxlen=None, n_words_src=30000,
@@ -92,6 +92,150 @@ def prepare_data(seqs_x, seqs_y, weights=None, maxlen=None, n_words_src=30000,
     else:
         return x, x_mask, y, y_mask
 
+def prepare_ctx_data(seqs_x, seqs_y, weights=None, maxlen=None, n_words_src=30000,
+                 n_words=30000, n_factors=1, options=None):
+    # x: a list of sentences
+    lengths_x = [len(s[1]) for s in seqs_x]
+    lengths_y = [len(s) for s in seqs_y]
+    lengths_pctx_x = [len(s[0]) for s in seqs_x]
+
+    if maxlen is not None:
+        new_seqs_x = []
+        new_seqs_y = []
+        new_lengths_x = []
+        new_lengths_pctx_x = []
+        new_lengths_y = []
+        new_weights = []
+        if weights is None:
+            weights = [None] * len(seqs_y)  # to make the zip easier
+        for l_x, s_x, l_y, s_y, l_pctx_x, w in zip(lengths_x, seqs_x, lengths_y, seqs_y, lengths_pctx_x, weights):
+            if l_x < maxlen and l_y < maxlen:
+                new_seqs_x.append(s_x)
+                new_lengths_x.append(l_x)
+                new_lengths_pctx_x.append(l_pctx_x)
+                new_seqs_y.append(s_y)
+                new_lengths_y.append(l_y)
+                new_weights.append(w)
+        lengths_x = new_lengths_x
+        lengths_pctx_x = new_lengths_pctx_x
+        seqs_x = new_seqs_x
+        lengths_y = new_lengths_y
+        seqs_y = new_seqs_y
+        weights = new_weights
+
+        if len(lengths_x) < 1 or len(lengths_y) < 1:
+            if weights is not None:
+                return None, None, None, None, None
+            else:
+                return None, None, None, None
+
+    n_samples = len(seqs_x)
+    maxlen_x = numpy.max(lengths_x) + 1
+    maxlen_pctx_x = numpy.max(lengths_pctx_x) + 1
+    maxlen_y = numpy.max(lengths_y) + 1
+
+    x = numpy.zeros((n_factors, maxlen_x, n_samples)).astype('int64')
+    x_pctx = numpy.zeros((1, maxlen_pctx_x, n_samples)).astype('int64')
+    y = numpy.zeros((maxlen_y, n_samples)).astype('int64')
+    x_mask = numpy.zeros((maxlen_x, n_samples)).astype(floatX)
+    y_mask = numpy.zeros((maxlen_y, n_samples)).astype(floatX)
+    if options['ctx_rnn']:
+        x_pctx_mask = numpy.zeros((maxlen_pctx_x, n_samples)).astype(floatX)
+    else:
+        x_pctx_mask = numpy.zeros((1, maxlen_pctx_x, n_samples)).astype(floatX)
+    for idx, [s_x, s_y] in enumerate(zip(seqs_x, seqs_y)):
+        x_pctx[0, :lengths_pctx_x[idx], idx] = zip(*s_x[0])[0] if s_x[0] is not None and len(s_x[0]) > 0 else 0
+        x[:, :lengths_x[idx], idx] = zip(*s_x[1])
+        if options['ctx_rnn']:
+            x_pctx_mask[:lengths_pctx_x[idx] + 1, idx] = 1.
+        else:
+            x_pctx_mask[0, :lengths_pctx_x[idx] + 1, idx] = 1.
+        x_mask[:lengths_x[idx] + 1, idx] = 1.
+        y[:lengths_y[idx], idx] = s_y
+        y_mask[:lengths_y[idx] + 1, idx] = 1.
+
+    if weights is not None:
+        return x_pctx, x, x_mask, x_pctx_mask, y, y_mask, weights
+    else:
+        return x_pctx, x, x_mask, x_pctx_mask, y, y_mask
+
+def prepare_mul_ctx_data(seqs_x, seqs_y, weights=None, maxlen=None, n_words_src=30000,
+                     n_words=30000, n_factors=1, options=None):
+    # x: a list of sentences
+    lengths_x = [len(s[1]) for s in seqs_x]
+    lengths_y = [len(s) for s in seqs_y]
+    # lengths_pctx_x = [len(s) for s1 in seqs_x for s in s1[0]]
+    lengths_pctx_x = []
+    for s1 in seqs_x:
+        tmp = []
+        for s in s1[0]:
+            tmp.append(len(s))
+        lengths_pctx_x.append(tmp)
+
+    if maxlen is not None:
+        new_seqs_x = []
+        new_seqs_y = []
+        new_lengths_x = []
+        new_lengths_pctx_x = []
+        new_lengths_y = []
+        new_weights = []
+        if weights is None:
+            weights = [None] * len(seqs_y)  # to make the zip easier
+        for l_x, s_x, l_y, s_y, l_pctx_x, w in zip(lengths_x, seqs_x, lengths_y, seqs_y, lengths_pctx_x, weights):
+            if l_x < maxlen and l_y < maxlen:
+                new_seqs_x.append(s_x)
+                new_lengths_x.append(l_x)
+                new_lengths_pctx_x.append(l_pctx_x)
+                new_seqs_y.append(s_y)
+                new_lengths_y.append(l_y)
+                new_weights.append(w)
+        lengths_x = new_lengths_x
+        lengths_pctx_x = new_lengths_pctx_x
+        seqs_x = new_seqs_x
+        lengths_y = new_lengths_y
+        seqs_y = new_seqs_y
+        weights = new_weights
+
+        if len(lengths_x) < 1 or len(lengths_y) < 1:
+            if weights is not None:
+                return None, None, None, None, None
+            else:
+                return None, None, None, None
+
+    n_samples = len(seqs_x)
+    maxlen_x = numpy.max(lengths_x) + 1
+    maxlen_pctx_x = numpy.max(lengths_pctx_x) + 1
+    maxlen_y = numpy.max(lengths_y) + 1
+
+    x = numpy.zeros((n_factors, maxlen_x, n_samples)).astype('int64')
+    x_pctx = numpy.zeros((options['num_ctx_sents'], maxlen_pctx_x, n_samples)).astype('int64')
+    y = numpy.zeros((maxlen_y, n_samples)).astype('int64')
+    x_mask = numpy.zeros((maxlen_x, n_samples)).astype(floatX)
+    y_mask = numpy.zeros((maxlen_y, n_samples)).astype(floatX)
+    if options['ctx_rnn']:
+        x_pctx_mask = numpy.zeros((maxlen_pctx_x, n_samples)).astype(floatX)
+    else:
+        x_pctx_mask = numpy.zeros((options['num_ctx_sents'], maxlen_pctx_x, n_samples)).astype(floatX)
+    for idx, [s_x, s_y] in enumerate(zip(seqs_x, seqs_y)):
+
+        for i in range(options['num_ctx_sents']):
+            x_pctx[i, :lengths_pctx_x[idx][i], idx] = zip(*s_x[0][i])[0] if s_x[0][i] is not None and len(s_x[0][i]) > 0 else 0
+        x[:, :lengths_x[idx], idx] = zip(*s_x[1])
+        if options['ctx_rnn']:
+            x_pctx_mask[:lengths_pctx_x[idx] + 1, idx] = 1.
+        else:
+            for i in range(options['num_ctx_sents']):
+                x_pctx_mask[:, :lengths_pctx_x[idx][i] + 1, idx] = 1.
+        x_mask[:lengths_x[idx] + 1, idx] = 1.
+        y[:lengths_y[idx], idx] = s_y
+        y_mask[:lengths_y[idx] + 1, idx] = 1.
+
+    if weights is not None:
+        return x_pctx, x, x_mask, x_pctx_mask, y, y_mask, weights
+    else:
+        return x_pctx, x, x_mask, x_pctx_mask, y, y_mask
+
+
 # initialize all parameters
 def init_params(options):
     params = OrderedDict()
@@ -112,6 +256,21 @@ def init_params(options):
                                               nin=options['dim_word'],
                                               dim=options['dim'],
                                               recurrence_transition_depth=options['enc_recurrence_transition_depth'])
+
+    if options['ctx_rnn']:
+        params = get_layer_param(options['encoder'])(options, params,
+                                                     prefix='ctx_encoder',
+                                                     nin=options['dim_word'],
+                                                     dim=options['dim'],
+                                                     recurrence_transition_depth=options[
+                                                         'enc_recurrence_transition_depth'])
+        params = get_layer_param(options['encoder'])(options, params,
+                                                     prefix='ctx_encoder_r',
+                                                     nin=options['dim_word'],
+                                                     dim=options['dim'],
+                                                     recurrence_transition_depth=options[
+                                                         'enc_recurrence_transition_depth'])
+
     if options['enc_depth'] > 1:
         for level in range(2, options['enc_depth'] + 1):
             prefix_f = pp('encoder', level)
@@ -217,7 +376,7 @@ def build_encoder(tparams, options, dropout, x_mask=None, sampling=False):
 
     x = tensor.tensor3('x', dtype='int64')
     # source text; factors 1; length 5; batch size 10
-    x.tag.test_value = (numpy.random.rand(1, 5, 10)*100).astype('int64')
+    # x.tag.test_value = (numpy.random.rand(1, 5, 10)*100).astype('int64')
 
     # for the backward rnn, we just need to invert x
     xr = x[:,::-1]
@@ -324,6 +483,179 @@ def build_encoder(tparams, options, dropout, x_mask=None, sampling=False):
 
     return x, ctx
 
+# bidirectional RNN encoder: take input x (optionally with mask), and produce sequence of context vectors (ctx)
+def build_ctx_encoder(tparams, options, dropout, x_mask=None, x_pctx_mask=None, sampling=False):
+
+    x_pctx = tensor.tensor3('x_pctx', dtype='int64')
+    x = tensor.tensor3('x', dtype='int64')
+    # source text; factors 1; length 5; batch size 10
+
+    # x_pctx.tag.test_value = (numpy.random.rand(1, 20, 10) * 100).astype('int64')
+    # x.tag.test_value = (numpy.random.rand(1, 5, 10)*100).astype('int64')
+
+    # for the backward rnn, we just need to invert x
+    xr = x[:,::-1]
+    if x_mask is None:
+        xr_mask = None
+    else:
+        xr_mask = x_mask[::-1]
+
+    x_pctxr = x_pctx[:,::-1]
+    if x_pctx_mask is None:
+        x_pctxr_mask = None
+    else:
+        x_pctxr_mask = x_pctx_mask[::-1]
+
+    n_timesteps = x.shape[1]
+    n_samples = x.shape[2]
+
+    n_p_timesteps = x_pctx.shape[1]
+
+    # word embedding for forward rnn (source)
+    emb = get_layer_constr('embedding')(tparams, x, suffix='', factors= options['factors'])
+
+    # word embedding for backward rnn (source)
+    embr = get_layer_constr('embedding')(tparams, xr, suffix='', factors= options['factors'])
+
+
+    if options['ctx_rnn']:
+        emb_pctx = tparams[embedding_name(0)][x_pctx.flatten()]
+        emb_pctx = emb_pctx.reshape((x_pctx.shape[1], x_pctx.shape[2], -1))
+
+        embr_pctx = tparams[embedding_name(0)][x_pctxr.flatten()]
+        embr_pctx = embr_pctx.reshape((x_pctxr.shape[1], x_pctxr.shape[2], -1))
+    else:
+        emb_pctx = tparams[embedding_name(0)][x_pctx.flatten()]
+        emb_pctx = emb_pctx.reshape((x_pctx.shape[0], x_pctx.shape[1], x_pctx.shape[2], -1))
+
+
+    if options['use_dropout']:
+        source_dropout = dropout((n_timesteps, n_samples, 1), options['dropout_source'])
+        if not sampling:
+            source_dropout = tensor.tile(source_dropout, (1,1,options['dim_word']))
+        emb *= source_dropout
+
+        if sampling:
+            embr *= source_dropout
+        else:
+            # we drop out the same words in both directions
+            embr *= source_dropout[::-1]
+
+        if options['ctx_rnn']:
+            source_p_dropout = dropout((n_p_timesteps, n_samples, 1),
+                                       options['dropout_source'])
+        else:
+            source_p_dropout = dropout((1, n_p_timesteps, n_samples, 1),
+                                       options['dropout_source'])
+
+        emb_pctx *= source_p_dropout
+
+        if options['ctx_rnn']:
+            if sampling:
+                embr_pctx *= source_p_dropout
+            else:
+                embr_pctx *= source_p_dropout[::-1]
+
+
+    ## level 1
+    proj = get_layer_constr(options['encoder'])(tparams, emb, options, dropout,
+                                                prefix='encoder',
+                                                mask=x_mask,
+                                                dropout_probability_below=options['dropout_embedding'],
+                                                dropout_probability_rec=options['dropout_hidden'],
+                                                recurrence_transition_depth=options['enc_recurrence_transition_depth'],
+                                                truncate_gradient=options['encoder_truncate_gradient'],
+                                                profile=profile)
+    projr = get_layer_constr(options['encoder'])(tparams, embr, options, dropout,
+                                                 prefix='encoder_r',
+                                                 mask=xr_mask,
+                                                 dropout_probability_below=options['dropout_embedding'],
+                                                 dropout_probability_rec=options['dropout_hidden'],
+                                                 recurrence_transition_depth=options['enc_recurrence_transition_depth'],
+                                                 truncate_gradient=options['encoder_truncate_gradient'],
+                                                 profile=profile)
+
+    if options['ctx_rnn']:
+        ctx_proj = get_layer_constr(options['encoder'])(tparams, emb_pctx, options, dropout,
+                                                        prefix='ctx_encoder',
+                                                        mask=x_pctx_mask,
+                                                        dropout_probability_below=options['dropout_embedding'],
+                                                        dropout_probability_rec=options['dropout_hidden'],
+                                                        recurrence_transition_depth=options[
+                                                            'enc_recurrence_transition_depth'],
+                                                        truncate_gradient=options['encoder_truncate_gradient'],
+                                                        profile=profile)
+        ctx_projr = get_layer_constr(options['encoder'])(tparams, embr_pctx, options, dropout,
+                                                         prefix='ctx_encoder_r',
+                                                         mask=x_pctxr_mask,
+                                                         dropout_probability_below=options['dropout_embedding'],
+                                                         dropout_probability_rec=options['dropout_hidden'],
+                                                         recurrence_transition_depth=options[
+                                                             'enc_recurrence_transition_depth'],
+                                                         truncate_gradient=options['encoder_truncate_gradient'],
+                                                         profile=profile)
+
+
+    # discard LSTM cell state
+    if options['encoder'].startswith('lstm'):
+        proj[0] = get_slice(proj[0], 0, options['dim'])
+        projr[0] = get_slice(projr[0], 0, options['dim'])
+
+    ## bidirectional levels before merge
+    for level in range(2, options['enc_depth_bidirectional'] + 1):
+        prefix_f = pp('encoder', level)
+        prefix_r = pp('encoder_r', level)
+
+        # run forward on previous backward and backward on previous forward
+        input_f = projr[0][::-1]
+        input_r = proj[0][::-1]
+
+        proj = get_layer_constr(options['encoder'])(tparams, input_f, options, dropout,
+                                                    prefix=prefix_f,
+                                                    mask=x_mask,
+                                                    dropout_probability_below=options['dropout_hidden'],
+                                                    dropout_probability_rec=options['dropout_hidden'],
+                                                    recurrence_transition_depth=options['enc_recurrence_transition_depth'],
+                                                    truncate_gradient=options['encoder_truncate_gradient'],
+                                                    profile=profile)
+        projr = get_layer_constr(options['encoder'])(tparams, input_r, options, dropout,
+                                                     prefix=prefix_r,
+                                                     mask=xr_mask,
+                                                     dropout_probability_below=options['dropout_hidden'],
+                                                     dropout_probability_rec=options['dropout_hidden'],
+                                                     recurrence_transition_depth=options['enc_recurrence_transition_depth'],
+                                                     truncate_gradient=options['encoder_truncate_gradient'],
+                                                     profile=profile)
+
+        # discard LSTM cell state
+        if options['encoder'].startswith('lstm'):
+            proj[0] = get_slice(proj[0], 0, options['dim'])
+            projr[0] = get_slice(projr[0], 0, options['dim'])
+
+        # residual connections
+        if level > 1:
+            proj[0] += input_f
+            projr[0] += input_r
+
+    # context will be the concatenation of forward and backward rnns
+    ctx = concatenate([proj[0], projr[0][::-1]], axis=proj[0].ndim-1)
+
+    if options['ctx_rnn']:
+        emb_pctx = concatenate([ctx_proj[0], ctx_projr[0][::-1]], axis=ctx_proj[0].ndim - 1)
+
+    ## forward encoder layers after bidirectional layers are concatenated
+    for level in range(options['enc_depth_bidirectional'] + 1, options['enc_depth'] + 1):
+
+        ctx += get_layer_constr(options['encoder'])(tparams, ctx, options, dropout,
+                                                   prefix=pp('encoder', level),
+                                                   mask=x_mask,
+                                                   dropout_probability_below=options['dropout_hidden'],
+                                                   dropout_probability_rec=options['dropout_hidden'],
+                                                   recurrence_transition_depth=options['enc_recurrence_transition_depth'],
+                                                   truncate_gradient=options['encoder_truncate_gradient'],
+                                                   profile=profile)[0]
+
+    return x_pctx, x, ctx, emb_pctx
 
 # RNN decoder (including embedding and feedforward layer before output)
 def build_decoder(tparams, options, y, ctx, init_state, dropout, x_mask=None, y_mask=None, sampling=False, pctx_=None, shared_vars=None, lm_init_state=None):
@@ -519,6 +851,207 @@ def build_decoder(tparams, options, y, ctx, init_state, dropout, x_mask=None, y_
 
     return logit, opt_ret, ret_state, lm_ret_state
 
+# RNN decoder (including embedding and feedforward layer before output)
+def build_ctx_decoder(tparams, options, y, ctx, init_state, dropout, x_mask=None, y_mask=None, sampling=False, pctx_=None, shared_vars=None, lm_init_state=None,
+                  emb_pctx=None, x_pctx_mask=None):
+    opt_ret = dict()
+
+    # tell RNN whether to advance just one step at a time (for sampling),
+    # or loop through sequence (for training)
+    if sampling:
+        one_step=True
+    else:
+        one_step=False
+
+    if options['use_dropout']:
+        if sampling:
+            target_dropout = dropout(dropout_probability=options['dropout_target'])
+        else:
+            n_timesteps_trg = y.shape[0]
+            n_samples = y.shape[1]
+            target_dropout = dropout((n_timesteps_trg, n_samples, 1), options['dropout_target'])
+            target_dropout = tensor.tile(target_dropout, (1, 1, options['dim_word']))
+
+    # word embedding (target), we will shift the target sequence one time step
+    # to the right. This is done because of the bi-gram connections in the
+    # readout and decoder rnn. The first target will be all zeros and we will
+    # not condition on the last output.
+    decoder_embedding_suffix = '' if options['tie_encoder_decoder_embeddings'] else '_dec'
+    emb = get_layer_constr('embedding')(tparams, y, suffix=decoder_embedding_suffix)
+    if options['use_dropout']:
+        emb *= target_dropout
+
+    if sampling:
+        emb = tensor.switch(y[:, None] < 0,
+            tensor.zeros((1, options['dim_word'])),
+            emb)
+    else:
+        emb_shifted = tensor.zeros_like(emb)
+        emb_shifted = tensor.set_subtensor(emb_shifted[1:], emb[:-1])
+        emb = emb_shifted
+
+    # decoder - pass through the decoder conditional gru with attention
+    proj = get_layer_constr(options['decoder'])(tparams, emb, options, dropout,
+                                            prefix='decoder',
+                                            mask=y_mask, context=ctx,
+                                            context_mask=x_mask,
+                                            pctx_=pctx_,
+                                            one_step=one_step,
+                                            init_state=init_state[0],
+                                            recurrence_transition_depth=options['dec_base_recurrence_transition_depth'],
+                                            dropout_probability_below=options['dropout_embedding'],
+                                            dropout_probability_ctx=options['dropout_hidden'],
+                                            dropout_probability_rec=options['dropout_hidden'],
+                                            truncate_gradient=options['decoder_truncate_gradient'],
+                                            emb_pctx=emb_pctx,
+                                            pctx_mask=x_pctx_mask,
+                                            profile=profile)
+    # hidden states of the decoder gru
+    next_state = proj[0]
+
+    # weighted averages of context, generated by attention module
+    ctxs = proj[1]
+
+    # weights (alignment matrix)
+    opt_ret['dec_alphas'] = proj[2]
+
+    if len(proj) > 3:
+        opt_ret['dec_betas'] = proj[3]
+        opt_ret['dec_gates'] = proj[4]
+
+    # we return state of each layer
+    if sampling:
+        ret_state = [next_state.reshape((1, next_state.shape[0], next_state.shape[1]))]
+    else:
+        ret_state = None
+
+    if options['dec_depth'] > 1:
+        for level in range(2, options['dec_depth'] + 1):
+
+            # don't pass LSTM cell state to next layer
+            if options['decoder'].startswith('lstm'):
+                next_state = get_slice(next_state, 0, options['dim'])
+
+            if options['dec_deep_context']:
+                if sampling:
+                    axis=1
+                else:
+                    axis=2
+                input_ = tensor.concatenate([next_state, ctxs], axis=axis)
+            else:
+                input_ = next_state
+
+            out_state = get_layer_constr(options['decoder_deep'])(tparams, input_, options, dropout,
+                                              prefix=pp('decoder', level),
+                                              mask=y_mask,
+                                              context=ctx,
+                                              context_mask=x_mask,
+                                              pctx_=None, #TODO: we can speed up sampler by precomputing this
+                                              one_step=one_step,
+                                              init_state=init_state[level-1],
+                                              dropout_probability_below=options['dropout_hidden'],
+                                              dropout_probability_rec=options['dropout_hidden'],
+                                              recurrence_transition_depth=options['dec_high_recurrence_transition_depth'],
+                                              truncate_gradient=options['decoder_truncate_gradient'],
+                                              profile=profile)[0]
+
+            if sampling:
+                ret_state.append(out_state.reshape((1, proj[0].shape[0], proj[0].shape[1])))
+
+            # don't pass LSTM cell state to next layer
+            if options['decoder'].startswith('lstm'):
+                out_state = get_slice(out_state, 0, options['dim'])
+
+            # residual connection
+            next_state += out_state
+
+    # don't pass LSTM cell state to next layer
+    elif options['decoder'].startswith('lstm'):
+        next_state = get_slice(next_state, 0, options['dim'])
+
+    if sampling:
+        if options['dec_depth'] > 1:
+            ret_state = tensor.concatenate(ret_state, axis=0)
+        else:
+            ret_state = ret_state[0]
+
+    # language model encoder (deep fusion)
+    lm_ret_state = None
+    if options['deep_fusion_lm']:
+        lm_emb = get_layer_constr('embedding')(tparams, y, prefix='lm_')
+
+        if sampling:
+            lm_emb = tensor.switch(y[:, None] < 0,
+                                   tensor.zeros((1, options['dim_word'])),
+                                   lm_emb)
+            if not lm_init_state:
+                lm_init_state = tensor.zeros((1, options['lm_dim']))
+
+        else:
+            lm_emb_shifted = tensor.zeros_like(lm_emb)
+            lm_emb_shifted = tensor.set_subtensor(lm_emb_shifted[1:], lm_emb[:-1])
+            lm_emb = lm_emb_shifted
+
+        lm_dropout = dropout_constr(options={'use_dropout':False}, use_noise=False, trng=None, sampling=False)
+
+        lm_proj = get_layer_constr(options['lm_encoder'])(tparams, lm_emb, options, lm_dropout,
+                                                          prefix='lm_encoder',
+                                                          mask=y_mask,
+                                                          one_step=one_step,
+                                                          init_state=lm_init_state,
+                                                          profile=profile)
+
+        lm_next_state = lm_proj[0]
+        lm_ret_state = lm_proj[0]
+
+        # don't pass LSTM cell state to next layer
+        if options['lm_encoder'].startswith('lstm'):
+            lm_next_state = get_slice(lm_next_state, 0, options['lm_dim'])
+
+        # controller mechanism
+        prefix = 'fusion_lm'
+        lm_gate = tensor.dot(lm_next_state, tparams[pp(prefix, 'v_g')])+tparams[pp(prefix, 'b_g')]
+        lm_gate = tensor.nnet.sigmoid(lm_gate)
+
+        if one_step:
+            lm_gate = tensor.tile(lm_gate, (1, options['lm_dim']))
+        else:
+            lm_gate = tensor.tile(lm_gate, (1, 1, options['lm_dim']))
+
+        lm_next_state = lm_next_state * lm_gate
+
+    # hidden layer taking RNN state, previous word embedding and context vector as input
+    # (this counts as the first layer in our deep output, which is always on)
+    if options['deep_fusion_lm'] and options['concatenate_lm_decoder']:
+        next_state = concatenate([lm_next_state, next_state], axis=next_state.ndim-1)
+
+    logit_lstm = get_layer_constr('ff')(tparams, next_state, options, dropout,
+                                    dropout_probability=options['dropout_hidden'],
+                                    prefix='ff_logit_lstm', activ='linear')
+    logit_prev = get_layer_constr('ff')(tparams, emb, options, dropout,
+                                    dropout_probability=options['dropout_embedding'],
+                                    prefix='ff_logit_prev', activ='linear')
+    logit_ctx = get_layer_constr('ff')(tparams, ctxs, options, dropout,
+                                   dropout_probability=options['dropout_hidden'],
+                                   prefix='ff_logit_ctx', activ='linear')
+
+    if options['deep_fusion_lm'] and not options['concatenate_lm_decoder']:
+        # add current lm encoder state to last layer
+        logit_lm = get_layer_constr('ff')(tparams, lm_next_state, options, dropout,
+                                          dropout_probability=options['dropout_hidden'],
+                                          prefix='ff_logit_lm', activ='linear')
+        logit = tensor.tanh(logit_lstm+logit_prev+logit_ctx+logit_lm)
+    else:
+        logit = tensor.tanh(logit_lstm+logit_prev+logit_ctx)
+
+    # last layer
+    logit_W = tparams['Wemb' + decoder_embedding_suffix].T if options['tie_decoder_embeddings'] else None
+    logit = get_layer_constr('ff')(tparams, logit, options, dropout,
+                            dropout_probability=options['dropout_hidden'],
+                            prefix='ff_logit', activ='linear', W=logit_W, followed_by_softmax=True)
+
+    return logit, opt_ret, ret_state, lm_ret_state
+
 # build a training model
 def build_model(tparams, options):
 
@@ -530,10 +1063,10 @@ def build_model(tparams, options):
     y = tensor.matrix('y', dtype='int64')
     y_mask = tensor.matrix('y_mask', dtype=floatX)
     # source text length 5; batch size 10
-    x_mask.tag.test_value = numpy.ones(shape=(5, 10)).astype(floatX)
+    # x_mask.tag.test_value = numpy.ones(shape=(5, 10)).astype(floatX)
     # target text length 8; batch size 10
-    y.tag.test_value = (numpy.random.rand(8, 10)*100).astype('int64')
-    y_mask.tag.test_value = numpy.ones(shape=(8, 10)).astype(floatX)
+    # y.tag.test_value = (numpy.random.rand(8, 10)*100).astype('int64')
+    # y_mask.tag.test_value = numpy.ones(shape=(8, 10)).astype(floatX)
 
     x, ctx = build_encoder(tparams, options, dropout, x_mask, sampling=False)
     n_samples = x.shape[2]
@@ -570,6 +1103,132 @@ def build_model(tparams, options):
     #print "Print out in build_model()"
     #print opt_ret
     return trng, use_noise, x, x_mask, y, y_mask, opt_ret, cost
+
+def build_ctx_model(tparams, options):
+    trng = RandomStreams(1234)
+    use_noise = theano.shared(numpy_floatX(0.))
+    dropout = dropout_constr(options, use_noise, trng, sampling=False)
+
+    x_mask = tensor.matrix('x_mask', dtype=floatX)
+    y = tensor.matrix('y', dtype='int64')
+    y_mask = tensor.matrix('y_mask', dtype=floatX)
+    # source text length 5; batch size 10
+    # x_mask.tag.test_value = numpy.ones(shape=(5, 10)).astype(floatX)
+    # target text length 8; batch size 10
+    # y.tag.test_value = (numpy.random.rand(8, 10) * 100).astype('int64')
+    # y_mask.tag.test_value = numpy.ones(shape=(8, 10)).astype(floatX)
+
+    if options['ctx_rnn']:
+        x_pctx_mask = tensor.matrix('x_pctx_mask', dtype=floatX)
+        # x_pctx_mask.tag.test_value = numpy.ones(shape=(20, 10)).astype(floatX)
+    else:
+        x_pctx_mask = tensor.tensor3('x_pctx_mask', dtype=floatX)
+        # x_pctx_mask.tag.test_value = numpy.ones(shape=(2, 20, 10)).astype(floatX)
+
+    x_pctx, x, ctx, emb_pctx = build_ctx_encoder(tparams, options, dropout, x_mask, x_pctx_mask, sampling=False)
+    n_samples = x.shape[2]
+
+    # mean of the context (across time) will be used to initialize decoder rnn
+    ctx_mean = (ctx * x_mask[:, :, None]).sum(0) / x_mask.sum(0)[:, None]
+
+    # or you can use the last state of forward + backward encoder rnns
+    # ctx_mean = concatenate([proj[0][-1], projr[0][-1]], axis=proj[0].ndim-2)
+
+    # initial decoder state
+    init_state = get_layer_constr('ff')(tparams, ctx_mean, options, dropout,
+                                        dropout_probability=options['dropout_hidden'],
+                                        prefix='ff_state', activ='tanh')
+
+    # every decoder RNN layer gets its own copy of the init state
+    init_state = init_state.reshape([1, init_state.shape[0], init_state.shape[1]])
+    if options['dec_depth'] > 1:
+        init_state = tensor.tile(init_state, (options['dec_depth'], 1, 1))
+
+    logit, opt_ret, _, _ = build_ctx_decoder(tparams, options, y, ctx, init_state, dropout, x_mask=x_mask, y_mask=y_mask,
+                                         sampling=False, emb_pctx=emb_pctx, x_pctx_mask=x_pctx_mask)
+
+    logit_shp = logit.shape
+    probs = tensor.nnet.softmax(logit.reshape([logit_shp[0] * logit_shp[1],
+                                               logit_shp[2]]))
+
+    # cost
+    y_flat = y.flatten()
+    y_flat_idx = tensor.arange(y_flat.shape[0]) * options['n_words'] + y_flat
+    cost = -tensor.log(probs.flatten()[y_flat_idx])
+    cost = cost.reshape([y.shape[0], y.shape[1]])
+    cost = (cost * y_mask).sum(0)
+
+    # print "Print out in build_model()"
+    # print opt_ret
+    return trng, use_noise, x, x_mask, x_pctx, x_pctx_mask, y, y_mask, opt_ret, cost
+
+def build_ctx_sampler(tparams, options, use_noise, trng, return_alignment=False):
+
+    dropout = dropout_constr(options, use_noise, trng, sampling=True)
+
+    x_pctx, x, ctx, emb_pctx = build_ctx_encoder(tparams, options, dropout, x_mask=None, sampling=True)
+    n_samples = x.shape[2]
+
+    # get the input for decoder rnn initializer mlp
+    ctx_mean = ctx.mean(0)
+    # ctx_mean = concatenate([proj[0][-1],projr[0][-1]], axis=proj[0].ndim-2)
+
+    init_state = get_layer_constr('ff')(tparams, ctx_mean, options, dropout,
+                                    dropout_probability=options['dropout_hidden'],
+                                    prefix='ff_state', activ='tanh')
+
+    # every decoder RNN layer gets its own copy of the init state
+    init_state = init_state.reshape([1, init_state.shape[0], init_state.shape[1]])
+    if options['dec_depth'] > 1:
+        init_state = tensor.tile(init_state, (options['dec_depth'], 1, 1))
+
+    logging.info('Building f_init...')
+    outs = [init_state, ctx, emb_pctx]
+    f_init = theano.function([x, x_pctx], outs, name='f_init', profile=profile)
+    logging.info('Done')
+
+    # x: 1 x 1
+    y = tensor.vector('y_sampler', dtype='int64')
+    y.tag.test_value = -1 * numpy.ones((10,)).astype('int64')
+    init_state_old = init_state
+    init_state = tensor.tensor3('init_state', dtype=floatX)
+    if theano.config.compute_test_value != 'off':
+        init_state.tag.test_value = numpy.random.rand(*init_state_old.tag.test_value.shape).astype(floatX)
+
+    lm_init_state = None
+    if options['deep_fusion_lm']:
+        lm_init_state = tensor.matrix('lm_init_state', dtype=floatX)
+
+    logit, opt_ret, ret_state, lm_ret_state = build_ctx_decoder(tparams, options, y, ctx, init_state, dropout, x_mask=None, y_mask=None, sampling=True, lm_init_state=lm_init_state, emb_pctx=emb_pctx)
+
+    # compute the softmax probability
+    next_probs = tensor.nnet.softmax(logit)
+
+    # sample from softmax distribution to get the sample
+    next_sample = trng.multinomial(pvals=next_probs).argmax(1)
+
+    # compile a function to do the whole thing above, next word probability,
+    # sampled word for the next target, next hidden state to be used
+    logging.info('Building f_next..')
+    if options['deep_fusion_lm']:
+        inps = [y, ctx, init_state, lm_init_state, emb_pctx]
+        outs = [next_probs, next_sample, ret_state, lm_ret_state]
+    else:
+        inps = [y, ctx, init_state, emb_pctx]
+        outs = [next_probs, next_sample, ret_state]
+
+    if return_alignment:
+        outs.append(opt_ret['dec_alphas'])
+
+        if "dec_betas" in opt_ret:
+            outs.append(opt_ret['dec_betas'])
+        if "dec_gates" in opt_ret:
+            outs.append(opt_ret['dec_gates'])
+
+    f_next = theano.function(inps, outs, name='f_next', profile=profile)
+    logging.info('Done')
+
+    return f_init, f_next
 
 
 # build a sampler
@@ -766,7 +1425,7 @@ def build_full_sampler(tparams, options, use_noise, trng, greedy=False):
 
 # generate sample, either with stochastic sampling or beam search. Note that,
 # this function iteratively calls f_init and f_next functions.
-def gen_sample(f_init, f_next, x, model_options=[None], trng=None, k=1, maxlen=30,
+def gen_sample(f_init, f_next, x_pctx, x, model_options=[None], trng=None, k=1, maxlen=30,
                stochastic=True, argmax=False, return_alignment=False, suppress_unk=False,
                return_hyp_graph=False):
 
@@ -779,6 +1438,8 @@ def gen_sample(f_init, f_next, x, model_options=[None], trng=None, k=1, maxlen=3
     sample_score = []
     sample_word_probs = []
     alignment = []
+    beta_alignment = []
+    gate = []
     hyp_graph = None
     if stochastic:
         if argmax:
@@ -800,17 +1461,27 @@ def gen_sample(f_init, f_next, x, model_options=[None], trng=None, k=1, maxlen=3
     if return_alignment:
         hyp_alignment = [[] for _ in xrange(live_k)]
 
+        beta_hyp_alignment = [[] for _ in xrange(live_k)]
+        gate_hyp = [[] for _ in xrange(live_k)]
+
     # for ensemble decoding, we keep track of states and probability distribution
     # for each model in the ensemble
     num_models = len(f_init)
     next_state = [None]*num_models
     lm_next_state = [None]*num_models
+    emb_pctx0 = [None] * num_models
     ctx0 = [None]*num_models
     next_p = [None]*num_models
     dec_alphas = [None]*num_models
+    dec_betas = [None] * num_models
+    dec_gates = [None] * num_models
     # get initial state of decoder rnn and encoder context
     for i in xrange(num_models):
-        ret = f_init[i](x)
+
+        if model_options['ctx_model']:
+            ret = f_init[i](x, x_pctx)
+        else:
+            ret = f_init[i](x)
 
         # to more easily manipulate batch size, go from (layers, batch_size, dim) to (batch_size, layers, dim)
         ret[0] = numpy.transpose(ret[0], (1,0,2))
@@ -822,6 +1493,8 @@ def gen_sample(f_init, f_next, x, model_options=[None], trng=None, k=1, maxlen=3
             lm_next_state[i] = numpy.tile( numpy.zeros((1, lm_dim)).astype(floatX) , (live_k, 1))
             
         ctx0[i] = ret[1]
+        if len(ret) > 2:
+            emb_pctx0[i] = ret[2]
 
     next_w = -1 * numpy.ones((live_k,)).astype('int64')  # bos indicator
 
@@ -829,17 +1502,22 @@ def gen_sample(f_init, f_next, x, model_options=[None], trng=None, k=1, maxlen=3
     for ii in xrange(maxlen):
         for i in xrange(num_models):
             ctx = numpy.tile(ctx0[i], [live_k, 1])
+            if emb_pctx0[i] is not None:
+                emb_pctx = numpy.tile(emb_pctx0[i], [live_k, 1])
 
             # for theano function, go from (batch_size, layers, dim) to (layers, batch_size, dim)
             next_state[i] = numpy.transpose(next_state[i], (1,0,2))
 
             if 'deep_fusion_lm' in model_options and model_options['deep_fusion_lm']:
-                inps = [next_w, ctx, next_state[i], lm_next_state[i]]
+                inps = [next_w, ctx, next_state[i], lm_next_state[i], emb_pctx]
                 ret = f_next[i](*inps)
                 # dimension of dec_alpha (k-beam-size, number-of-input-hidden-units)
                 next_p[i], next_w_tmp, next_state[i], lm_next_state[i] = ret[0], ret[1], ret[2], ret[3]
             else:
-                inps = [next_w, ctx, next_state[i]]
+                if model_options['ctx_model']:
+                    inps = [next_w, ctx, next_state[i], emb_pctx]
+                else:
+                    inps = [next_w, ctx, next_state[i]]
                 ret = f_next[i](*inps)
                 # dimension of dec_alpha (k-beam-size, number-of-input-hidden-units)
                 next_p[i], next_w_tmp, next_state[i] = ret[0], ret[1], ret[2]
@@ -848,6 +1526,9 @@ def gen_sample(f_init, f_next, x, model_options=[None], trng=None, k=1, maxlen=3
 
             if return_alignment:
                 dec_alphas[i] = ret[3]
+                if len(ret) > 4:
+                    dec_betas[i] = ret[4]
+                    dec_gates[i] = ret[5]
 
             # to more easily manipulate batch size, go from (layers, batch_size, dim) to (batch_size, layers, dim)
             next_state[i] = numpy.transpose(next_state[i], (1,0,2))
@@ -920,6 +1601,10 @@ def gen_sample(f_init, f_next, x, model_options=[None], trng=None, k=1, maxlen=3
             #averaging the attention weights accross models
             if return_alignment:
                 mean_alignment = sum(dec_alphas)/num_models
+                if dec_betas[0] is not None:
+                    mean_beta_alignment = sum(dec_betas) / num_models
+                if dec_gates[0] is not None:
+                    mean_gates = sum(dec_gates) / num_models
 
             voc_size = next_p[0].shape[1]
             # index of each k-best hypothesis
@@ -938,6 +1623,10 @@ def gen_sample(f_init, f_next, x, model_options=[None], trng=None, k=1, maxlen=3
                 # at each time step we append the attention weights corresponding to the current target word
                 new_hyp_alignment = [[] for _ in xrange(k-dead_k)]
 
+                if dec_betas[0] is not None:
+                    new_hyp_beta_alignment = [[] for _ in xrange(k - dead_k)]
+                    new_hyp_gate = [[] for _ in xrange(k - dead_k)]
+
             # ti -> index of k-best hypothesis
             for idx, [ti, wi] in enumerate(zip(trans_indices, word_indices)):
                 new_hyp_samples.append(hyp_samples[ti]+[wi])
@@ -951,6 +1640,13 @@ def gen_sample(f_init, f_next, x, model_options=[None], trng=None, k=1, maxlen=3
                     # extend the history with current attention weights
                     new_hyp_alignment[idx].append(mean_alignment[ti])
 
+                    if dec_betas[0] is not None:
+                        new_hyp_beta_alignment[idx] = copy.copy(beta_hyp_alignment[ti])
+                        new_hyp_beta_alignment[idx].append(mean_beta_alignment[ti])
+
+                        new_hyp_gate[idx] = copy.copy(gate_hyp[ti])
+                        new_hyp_gate[idx].append(mean_gates[ti])
+
             # check the finished samples
             new_live_k = 0
             hyp_samples = []
@@ -960,6 +1656,9 @@ def gen_sample(f_init, f_next, x, model_options=[None], trng=None, k=1, maxlen=3
             word_probs = []
             if return_alignment:
                 hyp_alignment = []
+
+                beta_hyp_alignment = []
+                gate_hyp = []
 
             # sample and sample_score hold the k-best translations and their scores
             for idx in xrange(len(new_hyp_samples)):
@@ -974,6 +1673,11 @@ def gen_sample(f_init, f_next, x, model_options=[None], trng=None, k=1, maxlen=3
                     sample_word_probs.append(new_word_probs[idx])
                     if return_alignment:
                         alignment.append(new_hyp_alignment[idx])
+
+                        if dec_betas[0] is not None:
+                            beta_alignment.append(new_hyp_beta_alignment[idx])
+                            gate.append(new_hyp_gate[idx])
+
                     dead_k += 1
                 else:
                     new_live_k += 1
@@ -984,6 +1688,11 @@ def gen_sample(f_init, f_next, x, model_options=[None], trng=None, k=1, maxlen=3
                     word_probs.append(new_word_probs[idx])
                     if return_alignment:
                         hyp_alignment.append(new_hyp_alignment[idx])
+
+                        if dec_betas[0] is not None:
+                            beta_hyp_alignment.append(new_hyp_beta_alignment[idx])
+                            gate_hyp.append(new_hyp_gate[idx])
+
             hyp_scores = numpy.array(hyp_scores)
 
             live_k = new_live_k
@@ -1006,10 +1715,17 @@ def gen_sample(f_init, f_next, x, model_options=[None], trng=None, k=1, maxlen=3
             if return_alignment:
                 alignment.append(hyp_alignment[idx])
 
+                if dec_betas[0] is not None:
+                    beta_alignment.append(beta_hyp_alignment[idx])
+                    gate.append(gate_hyp[idx])
+
     if not return_alignment:
         alignment = [None for i in range(len(sample))]
 
-    return sample, sample_score, sample_word_probs, alignment, hyp_graph
+    if dec_betas[0] is not None:
+        return sample, sample_score, sample_word_probs, alignment, hyp_graph, beta_alignment, gate
+    else:
+        return sample, sample_score, sample_word_probs, alignment, hyp_graph
 
 
 # calculate the log probablities on a given corpus using translation model
@@ -1021,24 +1737,37 @@ def pred_probs(f_log_probs, prepare_data, options, iterator, verbose=True, norma
 
     for x, y in iterator:
         #ensure consistency in number of factors
-        if len(x[0][0]) != options['factors']:
-            logging.error('Mismatch between number of factors in settings ({0}), and number in validation corpus ({1})\n'.format(options['factors'], len(x[0][0])))
-            sys.exit(1)
+        # if len(x[0][0]) != options['factors']:
+        #     logging.error('Mismatch between number of factors in settings ({0}), and number in validation corpus ({1})\n'.format(options['factors'], len(x[0][0])))
+        #     sys.exit(1)
 
         n_done += len(x)
 
-        x, x_mask, y, y_mask = prepare_data(x, y,
-                                            n_words_src=options['n_words_src'],
-                                            n_words=options['n_words'],
-                                            n_factors=options['factors'])
+        if options['ctx_model']:
+            x_pctx, x, x_mask, x_pctx_mask, y, y_mask = prepare_data(x, y,
+                                                n_words_src=options['n_words_src'],
+                                                n_words=options['n_words'],
+                                                n_factors=options['factors'],
+                                                options=options)
+        else:
+            x, x_mask, y, y_mask = prepare_data(x, y,
+                                                n_words_src=options['n_words_src'],
+                                                n_words=options['n_words'],
+                                                n_factors=options['factors'])
 
         ### in optional save weights mode.
         if alignweights:
-            pprobs, attention = f_log_probs(x, x_mask, y, y_mask)
+            if options['ctx_model']:
+                pprobs, attention = f_log_probs(x, x_mask, y, y_mask, x_pctx, x_pctx_mask)
+            else:
+                pprobs, attention = f_log_probs(x, x_mask, y, y_mask)
             for jdata in get_alignments(attention, x_mask, y_mask):
                 alignments_json.append(jdata)
         else:
-            pprobs = f_log_probs(x, x_mask, y, y_mask)
+            if options['ctx_model']:
+                pprobs = f_log_probs(x, x_mask, y, y_mask, x_pctx, x_pctx_mask)
+            else:
+                pprobs = f_log_probs(x, x_mask, y, y_mask)
 
         # normalize scores according to output length
         if normalization_alpha:
@@ -1143,6 +1872,7 @@ def train(dim_word=512,  # word vector dimensionality
           decoder_deep='gru',
           patience=10,  # early stopping patience
           max_epochs=5000,
+          min_epochs=0,
           finish_after=10000000,  # finish after this many updates
           dispFreq=1000,
           decay_c=0.,  # L2 regularization penalty
@@ -1154,9 +1884,7 @@ def train(dim_word=512,  # word vector dimensionality
           maxlen=100,  # maximum length of the description
           optimizer='adam',
           batch_size=16,
-          token_batch_size=0,
           valid_batch_size=16,
-          valid_token_batch_size=0,
           saveto='model.npz',
           deep_fusion_lm=None,
           concatenate_lm_decoder=False,
@@ -1187,8 +1915,6 @@ def train(dim_word=512,  # word vector dimensionality
           domain_interpolation_max=1.0, # maximum fraction of in-domain training data
           domain_interpolation_inc=0.1, # interpolation increment to be applied each time patience runs out, until maximum amount of interpolation is reached
           domain_interpolation_indomain_datasets=[None, None], # in-domain parallel training corpus (source and target)
-          multilingual=False, # Use multilingual NMT (requires the next parameter `language_source_target` to be set)
-          language_source_target=[None, None], # Languages and file names for multilingual NMT training
           anneal_restarts=0, # when patience run out, restart with annealed learning rate X times before early stopping
           anneal_decay=0.5, # decay learning rate by this amount on each restart
           maxibatch_size=20, #How many minibatches to load at one time
@@ -1211,10 +1937,25 @@ def train(dim_word=512,  # word vector dimensionality
           decoder_truncate_gradient=-1, # Truncate BPTT gradients in the decoder to this value. Use -1 for no truncation
           layer_normalisation=False, # layer normalisation https://arxiv.org/abs/1607.06450
           weight_normalisation=False, # normalize weights
+          ctx_model=False,  # use context code or not
+          ctx_gate=False,  # use gate in context model,
+          ctx_rnn=False,  # use context encoder
+          ctx_sep_enc=False,  # use separate encoder for context sentences
+          num_ctx_sents=0,  # number of context sentences
     ):
 
     # Model options
     model_options = OrderedDict(sorted(locals().copy().items()))
+
+    if model_options['ctx_model']:
+        if model_options['ctx_gate']:
+            if model_options['ctx_sep_enc']:
+                model_options['decoder'] = 'gru_cond_mul_ctx'
+            else:
+                model_options['decoder'] = 'gru_cond_ctx'
+        else:
+            model_options['decoder'] = 'gru_cond_ctx_nogate'
+
     # load LM options (deep fusion LM)
     if model_options['concatenate_lm_decoder'] and not model_options['deep_fusion_lm']:
         logging.error('Error: option \'concatenate_lm_decoder\' is enabled and no language model is provided.\n')
@@ -1321,19 +2062,7 @@ def train(dim_word=512,  # word vector dimensionality
         lrate *= anneal_decay**training_progress.anneal_restarts_done
 
     logging.info('Loading data')
-    if multilingual:
-        print 'Using multilingual iterator'
-        train = MultilingualTextIterator(datasets[0], datasets[1],
-                         dictionaries[:-1], dictionaries[-1],
-                         n_words_source=n_words_src, n_words_target=n_words,
-                         batch_size=batch_size,
-                         maxlen=maxlen,
-                         skip_empty=True,
-                         language_source_target=language_source_target,
-                         shuffle_each_epoch=shuffle_each_epoch,
-                         sort_by_length=sort_by_length,
-                         maxibatch_size=maxibatch_size)
-    elif use_domain_interpolation:
+    if use_domain_interpolation:
         logging.info('Using domain interpolation with initial ratio %s, final ratio %s, increase rate %s' % (training_progress.domain_interpolation_cur, domain_interpolation_max, domain_interpolation_inc))
         train = DomainInterpolatorTextIterator(datasets[0], datasets[1],
                          dictionaries[:-1], dictionaries[1],
@@ -1347,29 +2076,65 @@ def train(dim_word=512,  # word vector dimensionality
                          indomain_target=domain_interpolation_indomain_datasets[1],
                          interpolation_rate=training_progress.domain_interpolation_cur,
                          use_factor=(factors > 1),
-                         maxibatch_size=maxibatch_size,
-                         token_batch_size=token_batch_size)
+                         maxibatch_size=maxibatch_size)
     else:
-        train = TextIterator(datasets[0], datasets[1],
-                         dictionaries[:-1], dictionaries[-1],
-                         n_words_source=n_words_src, n_words_target=n_words,
-                         batch_size=batch_size,
-                         maxlen=maxlen,
-                         skip_empty=True,
-                         shuffle_each_epoch=shuffle_each_epoch,
-                         sort_by_length=sort_by_length,
-                         use_factor=(factors > 1),
-                         maxibatch_size=maxibatch_size,
-                         token_batch_size=token_batch_size)
+        if model_options['ctx_model']:
+            if model_options['ctx_sep_enc']:
+                train = MulCtxTextIterator(datasets[0], datasets[1],
+                                 dictionaries[:-1], dictionaries[-1],
+                                 n_words_source=n_words_src, n_words_target=n_words,
+                                 batch_size=batch_size,
+                                 maxlen=maxlen,
+                                 skip_empty=True,
+                                 shuffle_each_epoch=shuffle_each_epoch,
+                                 sort_by_length=sort_by_length,
+                                 maxibatch_size=maxibatch_size,
+                                 num_ctx_sents=model_options['num_ctx_sents'])
+            else:
+                train = CtxTextIterator(datasets[0], datasets[1],
+                                        dictionaries[:-1], dictionaries[-1],
+                                        n_words_source=n_words_src, n_words_target=n_words,
+                                        batch_size=batch_size,
+                                        maxlen=maxlen,
+                                        skip_empty=True,
+                                        shuffle_each_epoch=shuffle_each_epoch,
+                                        sort_by_length=sort_by_length,
+                                        maxibatch_size=maxibatch_size)
+        else:
+            train = TextIterator(datasets[0], datasets[1],
+                             dictionaries[:-1], dictionaries[-1],
+                             n_words_source=n_words_src, n_words_target=n_words,
+                             batch_size=batch_size,
+                             maxlen=maxlen,
+                             skip_empty=True,
+                             shuffle_each_epoch=shuffle_each_epoch,
+                             sort_by_length=sort_by_length,
+                             use_factor=(factors > 1),
+                             maxibatch_size=maxibatch_size)
 
     if valid_datasets and validFreq:
-        valid = TextIterator(valid_datasets[0], valid_datasets[1],
-                            dictionaries[:-1], dictionaries[-1],
-                            n_words_source=n_words_src, n_words_target=n_words,
-                            batch_size=valid_batch_size,
-                            use_factor=(factors>1),
-                            maxlen=maxlen,
-                            token_batch_size=valid_token_batch_size)
+        if model_options['ctx_model']:
+            if model_options['ctx_sep_enc']:
+                valid = MulCtxTextIterator(valid_datasets[0], valid_datasets[1],
+                                    dictionaries[:-1], dictionaries[-1],
+                                    n_words_source=n_words_src, n_words_target=n_words,
+                                    batch_size=valid_batch_size,
+                                    maxlen=maxlen,
+                                    num_ctx_sents=model_options['num_ctx_sents'])
+            else:
+
+                valid = CtxTextIterator(valid_datasets[0], valid_datasets[1],
+                                        dictionaries[:-1], dictionaries[-1],
+                                        n_words_source=n_words_src, n_words_target=n_words,
+                                        batch_size=valid_batch_size,
+                                        maxlen=maxlen)
+        else:
+            valid = TextIterator(valid_datasets[0], valid_datasets[1],
+                                dictionaries[:-1], dictionaries[-1],
+                                n_words_source=n_words_src, n_words_target=n_words,
+                                batch_size=valid_batch_size,
+                                use_factor=(factors>1),
+                                maxlen=maxlen)
     else:
         valid = None
 
@@ -1383,7 +2148,7 @@ def train(dim_word=512,  # word vector dimensionality
     # prepare parameters
     if reload_ and os.path.exists(saveto):
         logging.info('Reloading model parameters')
-        params = load_params(saveto, params)
+        params = load_params(saveto, params, logging=logging)
         logging.info('Reloading optimizer parameters')
         try:
             logging.info('trying to load optimizer params from {0} or {1}'.format(saveto + '.gradinfo', saveto + '.gradinfo.npz'))
@@ -1398,7 +2163,7 @@ def train(dim_word=512,  # word vector dimensionality
     # load prior model if specified
     if prior_model:
         logging.info('Loading prior model parameters')
-        params = load_params(prior_model, params, with_prefix='prior_')
+        params, model_options = load_params(prior_model, params, model_options, with_prefix='prior_')
 
     # language model parameters and
     # parameter initialization (deep fusion)
@@ -1410,17 +2175,30 @@ def train(dim_word=512,  # word vector dimensionality
 
     tparams = init_theano_params(params)
 
-    trng, use_noise, \
-        x, x_mask, y, y_mask, \
-        opt_ret, \
-        cost = \
-        build_model(tparams, model_options)
+    if model_options['ctx_model']:
+        trng, use_noise, \
+            x, x_mask, x_pctx, x_pctx_mask, y, y_mask, \
+            opt_ret, \
+            cost = \
+            build_ctx_model(tparams, model_options)
+    else:
+        trng, use_noise, \
+            x, x_mask, y, y_mask, \
+            opt_ret, \
+            cost = \
+            build_model(tparams, model_options)
 
-    inps = [x, x_mask, y, y_mask]
+    if model_options['ctx_model']:
+        inps = [x, x_mask, y, y_mask, x_pctx, x_pctx_mask]
+    else:
+        inps = [x, x_mask, y, y_mask]
 
     if validFreq or sampleFreq:
         logging.info('Building sampler')
-        f_init, f_next = build_sampler(tparams, model_options, use_noise, trng)
+        if model_options['ctx_model']:
+            f_init, f_next = build_ctx_sampler(tparams, model_options, use_noise, trng)
+        else:
+            f_init, f_next = build_sampler(tparams, model_options, use_noise, trng)
     if model_options['objective'] == 'MRT':
         logging.info('Building MRT sampler')
         f_sampler = build_full_sampler(tparams, model_options, use_noise, trng)
@@ -1538,9 +2316,9 @@ def train(dim_word=512,  # word vector dimensionality
             use_noise.set_value(1.)
 
             #ensure consistency in number of factors
-            if len(x) and len(x[0]) and len(x[0][0]) != factors:
-                logging.error('Mismatch between number of factors in settings ({0}), and number in training corpus ({1})\n'.format(factors, len(x[0][0])))
-                sys.exit(1)
+            # if len(x) and len(x[0]) and len(x[0][1][0]) != factors:
+            #     logging.error('Mismatch between number of factors in settings ({0}), and number in training corpus ({1})\n'.format(factors, len(x[0][0])))
+            #     sys.exit(1)
 
             if model_options['objective'] in ['CE', 'RAML']:
 
@@ -1554,11 +2332,27 @@ def train(dim_word=512,  # word vector dimensionality
                 xlen = len(x)
                 n_samples += xlen
 
-                x, x_mask, y, y_mask, sample_weights = prepare_data(x, y, weights=sample_weights,
-                                                                    maxlen=maxlen,
-                                                                    n_factors=factors,
-                                                                    n_words_src=n_words_src,
-                                                                    n_words=n_words)
+                if model_options['ctx_model']:
+                    if model_options['ctx_sep_enc']:
+                        x_pctx, x, x_mask, x_pctx_mask, y, y_mask, sample_weights = prepare_mul_ctx_data(x, y, weights=sample_weights,
+                                                                            maxlen=maxlen,
+                                                                            n_factors=factors,
+                                                                            n_words_src=n_words_src,
+                                                                            n_words=n_words,
+                                                                            options=model_options)
+                    else:
+                        x_pctx, x, x_mask, x_pctx_mask, y, y_mask, sample_weights = prepare_ctx_data(x, y, weights=sample_weights,
+                                                                            maxlen=maxlen,
+                                                                            n_factors=factors,
+                                                                            n_words_src=n_words_src,
+                                                                            n_words=n_words,
+                                                                            options=model_options)
+                else:
+                    x, x_mask, y, y_mask, sample_weights = prepare_data(x, y, weights=sample_weights,
+                                                                        maxlen=maxlen,
+                                                                        n_factors=factors,
+                                                                        n_words_src=n_words_src,
+                                                                        n_words=n_words)
 
                 if x is None:
                     logging.warning('Minibatch with zero sample under length %d' % maxlen)
@@ -1573,7 +2367,10 @@ def train(dim_word=512,  # word vector dimensionality
                 if model_options['objective'] == 'RAML':
                     cost = f_update(lrate, x, x_mask, y, y_mask, sample_weights)
                 else:
-                    cost = f_update(lrate, x, x_mask, y, y_mask)
+                    if model_options['ctx_model']:
+                        cost = f_update(lrate, x, x_mask, y, y_mask, x_pctx, x_pctx_mask)
+                    else:
+                        cost = f_update(lrate, x, x_mask, y, y_mask)
                 cost_sum += cost
 
             elif model_options['objective'] == 'MRT':
@@ -1720,11 +2517,15 @@ def train(dim_word=512,  # word vector dimensionality
                 for jj in xrange(numpy.minimum(5, x.shape[2])):
                     stochastic = True
                     x_current = x[:, :, jj][:, :, None]
+                    x_pctx_current = None
+                    if model_options['ctx_model']:
+                        x_pctx_current = x_pctx[:, :, jj][:, :, None]
 
                     # remove padding
                     x_current = x_current[:,:x_mask.astype('int64')[:, jj].sum(),:]
 
                     sample, score, sample_word_probs, alignment, hyp_graph = gen_sample([f_init], [f_next],
+                                               x_pctx_current,
                                                x_current,
                                                model_options,
                                                trng=trng, k=1,
@@ -1775,8 +2576,16 @@ def train(dim_word=512,  # word vector dimensionality
             # validate model on validation set and early stop if necessary
             if valid is not None and validFreq and numpy.mod(training_progress.uidx, validFreq) == 0:
                 use_noise.set_value(0.)
-                valid_errs, alignment = pred_probs(f_log_probs, prepare_data,
-                                        model_options, valid)
+                if model_options['ctx_model']:
+                    if model_options['ctx_sep_enc']:
+                        valid_errs, alignment = pred_probs(f_log_probs, prepare_mul_ctx_data,
+                                                model_options, valid)
+                    else:
+                        valid_errs, alignment = pred_probs(f_log_probs, prepare_ctx_data,
+                                                model_options, valid)
+                else:
+                    valid_errs, alignment = pred_probs(f_log_probs, prepare_data,
+                                            model_options, valid)
                 valid_err = valid_errs.mean()
                 training_progress.history_errs.append(float(valid_err))
 
@@ -1815,10 +2624,13 @@ def train(dim_word=512,  # word vector dimensionality
 
                         # stop
                         else:
-                            logging.info('Valid {}'.format(valid_err))
-                            logging.info('Early Stop!')
-                            training_progress.estop = True
-                            break
+                            if training_progress.eidx >= model_options['min_epochs']:
+                                logging.info('Valid {}'.format(valid_err))
+                                logging.info('Early Stop!')
+                                training_progress.estop = True
+                                break
+                            else:
+                                logging.info("Won't early stop here because hasn't reached min_epochs")
 
                 logging.info('Valid {}'.format(valid_err))
 
@@ -1836,11 +2648,7 @@ def train(dim_word=512,  # word vector dimensionality
                     save(params, optimizer_params, training_progress, saveto+'.dev')
                     json.dump(model_options, open('%s.dev.npz.json' % saveto, 'wb'), indent=2)
                     logging.info('Done')
-                    env = os.environ
-                    # hack to ignore Theano's one-process-per-GPU check
-                    if 'THEANO_GPU_IS_ALREADY_ACTIVE' in env:
-                        del env['THEANO_GPU_IS_ALREADY_ACTIVE']
-                    p_validation = Popen([external_validation_script], env=env)
+                    p_validation = Popen([external_validation_script])
 
             # finish after this many updates
             if training_progress.uidx >= finish_after:
@@ -1859,8 +2667,16 @@ def train(dim_word=512,  # word vector dimensionality
 
     if valid is not None:
         use_noise.set_value(0.)
-        valid_errs, alignment = pred_probs(f_log_probs, prepare_data,
-                                           model_options, valid)
+        if model_options['ctx_model']:
+            if model_options['ctx_sep_enc']:
+                valid_errs, alignment = pred_probs(f_log_probs, prepare_mul_ctx_data,
+                                                   model_options, valid)
+            else:
+                valid_errs, alignment = pred_probs(f_log_probs, prepare_ctx_data,
+                                                   model_options, valid)
+        else:
+            valid_errs, alignment = pred_probs(f_log_probs, prepare_data,
+                                               model_options, valid)
         valid_err = valid_errs.mean()
 
         logging.info('Valid {}'.format(valid_err))
@@ -1959,16 +2775,22 @@ if __name__ == '__main__':
     network.add_argument('--concatenate_lm_decoder', action="store_true", dest="concatenate_lm_decoder",
                          help="concatenate LM state and decoder state (deep fusion)")
 
+
+    network.add_argument('--ctx_model', action="store_true", help="use context model")
+    network.add_argument('--ctx_gate', action="store_true", help="use gate in context model")
+    network.add_argument('--ctx_rnn', action="store_true", help="use context encoder")
+    network.add_argument('--ctx_sep_enc', action="store_true", help="use separate encoder for context sentences")
+    network.add_argument('--num_ctx_sents', type=int, default=0, help="number of context sentences")
+
+
     training = parser.add_argument_group('training parameters')
     training.add_argument('--maxlen', type=int, default=100, metavar='INT',
                          help="maximum sequence length (default: %(default)s)")
     training.add_argument('--optimizer', type=str, default="adam",
-                         choices=['adam', 'adadelta', 'rmsprop', 'sgd', 'sgdmomentum'],
+                         choices=['adam', 'adadelta', 'rmsprop', 'sgd', 'sgdmomentum', 'amsgrad'],
                          help="optimizer (default: %(default)s)")
     training.add_argument('--batch_size', type=int, default=80, metavar='INT',
                          help="minibatch size (default: %(default)s)")
-    training.add_argument('--token_batch_size', type=int, default=0, metavar='INT',
-                          help="minibatch size (expressed in number of source or target tokens). Sentence-level minibatch size will be dynamic. If this is enabled, batch_size only affects sorting by length. (default: %(default)s)")
     training.add_argument('--max_epochs', type=int, default=5000, metavar='INT',
                          help="maximum number of epochs (default: %(default)s)")
     training.add_argument('--finish_after', type=int, default=10000000, metavar='INT',
@@ -1997,13 +2819,13 @@ if __name__ == '__main__':
     training.add_argument('--decoder_truncate_gradient', type=int, default=-1, metavar='INT',
                          help="truncate BPTT gradients in the encoder to this value. Use -1 for no truncation (default: %(default)s)")
 
+    training.add_argument('--min_epochs', type=int, default=0, help="Minimum number of epochs to train")
+
     validation = parser.add_argument_group('validation parameters')
     validation.add_argument('--valid_datasets', type=str, default=None, metavar='PATH', nargs=2,
                          help="parallel validation corpus (source and target) (default: %(default)s)")
     validation.add_argument('--valid_batch_size', type=int, default=80, metavar='INT',
                          help="validation minibatch size (default: %(default)s)")
-    training.add_argument('--valid_token_batch_size', type=int, default=0, metavar='INT',
-                          help="validation minibatch size (expressed in number of source or target tokens). Sentence-level minibatch size will be dynamic. If this is enabled, valid_batch_size only affects sorting by length. (default: %(default)s)")
     validation.add_argument('--validFreq', type=int, default=10000, metavar='INT',
                          help="validation frequency (default: %(default)s)")
     validation.add_argument('--patience', type=int, default=10, metavar='INT',
@@ -2061,7 +2883,7 @@ if __name__ == '__main__':
     level = logging.INFO
     logging.basicConfig(level=level, format='%(levelname)s: %(message)s')
 
-    #print vars(args)
+    print vars(args)
     train(**vars(args))
 
 #    Profile peak GPU memory usage by uncommenting next line and enabling theano CUDA memory profiling (http://deeplearning.net/software/theano/tutorial/profiling.html)

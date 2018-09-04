@@ -83,7 +83,7 @@ def load_params_lm(options, params, with_prefix='lm_'):
     return params
 
 # load parameters
-def load_params(path, params, with_prefix=''):
+def load_params(path, params, with_prefix='', logging=None):
     try:
         pp = numpy.load(path)
     except IOError:

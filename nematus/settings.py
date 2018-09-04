@@ -81,6 +81,12 @@ class TranslationSettings(BaseSettings):
             self._parser.add_argument('--output_alignment', '-a', type=argparse.FileType('w'),
                                       default=None, metavar='PATH',
                                       help="Output file for alignment weights (default: standard output)")
+            self._parser.add_argument('--output_beta_alignment', '-b', type=argparse.FileType('w'),
+                                default=None, metavar='PATH',
+                                help="Output file for beta alignment weights (default: standard output)")
+            self._parser.add_argument('--output_gates', type=argparse.FileType('w'),
+                                default=None, metavar='PATH',
+                                help="Output file for gate weights (default: standard output)")
 
         self._parser.add_argument('--json_alignment', action="store_true",
                                   help="Output alignment in json format")
